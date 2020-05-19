@@ -17,11 +17,11 @@ To install it, you'll need to satisfy the following dependencies:
 
 * [Jansson](http://www.digip.org/jansson/)
 * [libconfig](https://hyperrealm.github.io/libconfig/)
-* [libnice](http://nice.freedesktop.org/wiki/) (at least v0.1.15 suggested, master recommended)
+* [libnice](http://nice.freedesktop.org/wiki/) (at least v0.1.16 suggested, master recommended)
 * [OpenSSL](http://www.openssl.org/) (at least v1.0.1e)
 * [libsrtp](https://github.com/cisco/libsrtp) (at least v1.5 suggested)
 * [usrsctp](https://github.com/sctplab/usrsctp) (only needed if you are interested in Data Channels)
-* [libmicrohttpd](http://www.gnu.org/software/libmicrohttpd/) (only needed if you are interested in REST support for the Janus API)
+* [libmicrohttpd](http://www.gnu.org/software/libmicrohttpd/) (at least v0.9.59; only needed if you are interested in REST support for the Janus API)
 * [libwebsockets](https://libwebsockets.org/) (only needed if you are interested in WebSockets support for the Janus API)
 * [cmake](http://www.cmake.org/) (only needed if you are interested in WebSockets and/or BoringSSL support, as they make use of it)
 * [rabbitmq-c](https://github.com/alanxz/rabbitmq-c) (only needed if you are interested in RabbitMQ support for the Janus API or events)
@@ -90,7 +90,9 @@ The instructions for version 2.x are practically the same. Notice that the follo
 	./configure --prefix=/usr --enable-openssl
 	make shared_library && sudo make install
 
-The Janus configure script autodetects which one you have installed and links to the correct library automatically, choosing 2.x if both are installed. If you want 1.5 or 1.6 to be picked, pass `--disable-libsrtp2` when configuring Janus to force it to use the older version instead.
+Notice that the `--enable-openssl` part is _important_, as it's needed for AES-GCM support. As an alternative, you can also pass `--enable-nss` to have libsrtp use NSS instead of OpenSSL. A failure to configure libsrtp with either might cause undefined references when starting Janus, as we'd be trying to use methods that aren't there.
+
+The Janus configure script autodetects which one you have installed and links to the correct library automatically, choosing 2.x if both are installed. If you want 1.5 or 1.6 to be picked (which is NOT recommended), pass `--disable-libsrtp2` when configuring Janus to force it to use the older version instead.
 
 * *Note:* when installing libsrtp, no matter which version, you may need to pass `--libdir=/usr/lib64` to the configure script if you're installing on a x86_64 distribution.
 
@@ -263,6 +265,9 @@ or on the command line:
 	-1, --nat-1-1=ip              Public IP to put in all host candidates,
                                   assuming a 1:1 NAT is in place (e.g., Amazon
                                   EC2 instances, default=none)
+	-2, --keep-private-host       When nat-1-1 is used (e.g., Amazon EC2
+                                  instances), don't remove the private host,
+                                  but keep both to simulate STUN  (default=off)
 	-E, --ice-enforce-list=list   Comma-separated list of the only interfaces to
                                   use for ICE gathering; partial strings are
                                   supported (e.g., eth0 or eno1,wlan0,
@@ -314,6 +319,9 @@ or on the command line:
 	-A, --token-auth              Enable token-based authentication for all
                                   requests  (default=off)
 	-e, --event-handlers          Enable event handlers  (default=off)
+	-w, --no-webrtc-encryption    Disable WebRTC encryption, so no DTLS or SRTP
+                                  (only for debugging!)  (default=off)
+
 
 Options passed through the command line have the precedence on those specified in the configuration file. To start the server, simply run:
 

@@ -781,6 +781,7 @@ const char *janus_srtp_error_str(int error) {
 
 /* Payload types we'll offer internally */
 #define OPUS_PT		111
+#define MULTIOPUS_PT	OPUS_PT
 #define ISAC32_PT	104
 #define ISAC16_PT	103
 #define PCMU_PT		0
@@ -795,6 +796,8 @@ const char *janus_audiocodec_name(janus_audiocodec acodec) {
 			return "none";
 		case JANUS_AUDIOCODEC_OPUS:
 			return "opus";
+		case JANUS_AUDIOCODEC_MULTIOPUS:
+			return "multiopus";
 		case JANUS_AUDIOCODEC_PCMU:
 			return "pcmu";
 		case JANUS_AUDIOCODEC_PCMA:
@@ -815,6 +818,8 @@ janus_audiocodec janus_audiocodec_from_name(const char *name) {
 		return JANUS_AUDIOCODEC_NONE;
 	else if(!strcasecmp(name, "opus"))
 		return JANUS_AUDIOCODEC_OPUS;
+	else if(!strcasecmp(name, "multiopus"))
+		return JANUS_AUDIOCODEC_MULTIOPUS;
 	else if(!strcasecmp(name, "isac32"))
 		return JANUS_AUDIOCODEC_ISAC_32K;
 	else if(!strcasecmp(name, "isac16"))
@@ -834,6 +839,8 @@ int janus_audiocodec_pt(janus_audiocodec acodec) {
 			return -1;
 		case JANUS_AUDIOCODEC_OPUS:
 			return OPUS_PT;
+		case JANUS_AUDIOCODEC_MULTIOPUS:
+			return MULTIOPUS_PT;
 		case JANUS_AUDIOCODEC_ISAC_32K:
 			return ISAC32_PT;
 		case JANUS_AUDIOCODEC_ISAC_16K:
@@ -997,9 +1004,9 @@ gboolean janus_rtp_simulcasting_context_process_rtp(janus_rtp_simulcasting_conte
 		/* Let's start slow */
 		context->last_relayed = janus_get_monotonic_time();
 	} else {
-		/* Check if 250ms went by with no packet relayed */
+		/* Check if too much time went by with no packet relayed */
 		gint64 now = janus_get_monotonic_time();
-		if(now-context->last_relayed >= 250000) {
+		if(now-context->last_relayed >= (context->drop_trigger ? context->drop_trigger : 250000)) {
 			context->last_relayed = now;
 			int substream = context->substream-1;
 			if(substream < 0)

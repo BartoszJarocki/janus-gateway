@@ -39,6 +39,7 @@
 	"audiocodec" : "<optional codec name; only used when creating a PeerConnection>",
 	"video" : true|false,
 	"videocodec" : "<optional codec name; only used when creating a PeerConnection>",
+	"videoprofile" : "<optional codec profile to force; only used when creating a PeerConnection, only valid for VP9 (0 or 2) and H.264 (e.g., 42e01f)>",
 	"bitrate" : <numeric bitrate value>,
 	"record" : true|false,
 	"filename" : <base path/filename to use for the recording>,
@@ -51,7 +52,9 @@
  * use the preferred audio codecs as set by the user; if for any reason you
  * want to override what the browsers offered first and use a different
  * codec instead (e.g., to try VP9 instead of VP8), you can use the
- * \c audiocodec property for audio, and \c videocodec for video.
+ * \c audiocodec property for audio, and \c videocodec for video. For video
+ * codecs supporting a specific profile negotiation (VP9 and H.264), you can
+ * specify which profile you're interested in using the \c videoprofile property.
  *
  * All the other settings can be applied dynamically during the session:
  * \c audio instructs the plugin to do or do not bounce back audio
@@ -145,6 +148,7 @@ void janus_echotest_setup_media(janus_plugin_session *handle);
 void janus_echotest_incoming_rtp(janus_plugin_session *handle, janus_plugin_rtp *packet);
 void janus_echotest_incoming_rtcp(janus_plugin_session *handle, janus_plugin_rtcp *packet);
 void janus_echotest_incoming_data(janus_plugin_session *handle, janus_plugin_data *packet);
+void janus_echotest_data_ready(janus_plugin_session *handle);
 void janus_echotest_slow_link(janus_plugin_session *handle, int uplink, int video);
 void janus_echotest_hangup_media(janus_plugin_session *handle);
 void janus_echotest_destroy_session(janus_plugin_session *handle, int *error);
@@ -171,6 +175,7 @@ static janus_plugin janus_echotest_plugin =
 		.incoming_rtp = janus_echotest_incoming_rtp,
 		.incoming_rtcp = janus_echotest_incoming_rtcp,
 		.incoming_data = janus_echotest_incoming_data,
+		.data_ready = janus_echotest_data_ready,
 		.slow_link = janus_echotest_slow_link,
 		.hangup_media = janus_echotest_hangup_media,
 		.destroy_session = janus_echotest_destroy_session,
@@ -210,6 +215,7 @@ typedef struct janus_echotest_session {
 	gboolean video_active;
 	janus_audiocodec acodec;/* Codec used for audio, if available */
 	janus_videocodec vcodec;/* Codec used for video, if available */
+	char *vfmtp;
 	uint32_t bitrate, peer_bitrate;
 	janus_rtp_switching_context context;
 	uint32_t ssrc[3];		/* Only needed in case VP8 (or H.264) simulcasting is involved */
@@ -238,6 +244,7 @@ static void janus_echotest_session_free(const janus_refcount *session_ref) {
 	/* Remove the reference to the core plugin session */
 	janus_refcount_decrease(&session->handle->ref);
 	/* This session can be destroyed, free all the resources */
+	g_free(session->vfmtp);
 	g_free(session);
 }
 
@@ -464,6 +471,8 @@ json_t *janus_echotest_query_session(janus_plugin_session *handle) {
 		json_object_set_new(info, "substream-target", json_integer(session->sim_context.substream_target));
 		json_object_set_new(info, "temporal-layer", json_integer(session->sim_context.templayer));
 		json_object_set_new(info, "temporal-layer-target", json_integer(session->sim_context.templayer_target));
+		if(session->sim_context.drop_trigger > 0)
+			json_object_set_new(info, "fallback", json_integer(session->sim_context.drop_trigger));
 	}
 	if(session->arc || session->vrc || session->drc) {
 		json_t *recording = json_object();
@@ -682,6 +691,13 @@ void janus_echotest_incoming_data(janus_plugin_session *handle, janus_plugin_dat
 	}
 }
 
+void janus_echotest_data_ready(janus_plugin_session *handle) {
+	if(handle == NULL || g_atomic_int_get(&handle->stopped) ||
+			g_atomic_int_get(&stopping) || !g_atomic_int_get(&initialized) || !gateway)
+		return;
+	/* Data channels are writable */
+}
+
 void janus_echotest_slow_link(janus_plugin_session *handle, int uplink, int video) {
 	/* The core is informing us that our peer got or sent too many NACKs, are we pushing media too hard? */
 	if(handle == NULL || g_atomic_int_get(&handle->stopped) || g_atomic_int_get(&stopping) || !g_atomic_int_get(&initialized))
@@ -789,6 +805,8 @@ static void janus_echotest_hangup_media_internal(janus_plugin_session *handle) {
 	session->video_active = TRUE;
 	session->acodec = JANUS_AUDIOCODEC_NONE;
 	session->vcodec = JANUS_VIDEOCODEC_NONE;
+	g_free(session->vfmtp);
+	session->vfmtp = NULL;
 	session->bitrate = 0;
 	session->peer_bitrate = 0;
 	int i=0;
@@ -895,6 +913,13 @@ static void *janus_echotest_handler(void *data) {
 			g_snprintf(error_cause, 512, "Invalid value (temporal should be 0, 1 or 2)");
 			goto error;
 		}
+		json_t *fallback = json_object_get(root, "fallback");
+		if(fallback && (!json_is_integer(fallback) || json_integer_value(fallback) < 0)) {
+			JANUS_LOG(LOG_ERR, "Invalid element (fallback should be a positive integer)\n");
+			error_code = JANUS_ECHOTEST_ERROR_INVALID_ELEMENT;
+			g_snprintf(error_cause, 512, "Invalid value (fallback should be a positive integer)");
+			goto error;
+		}
 		json_t *record = json_object_get(root, "record");
 		if(record && !json_is_boolean(record)) {
 			JANUS_LOG(LOG_ERR, "Invalid element (record should be a boolean)\n");
@@ -923,6 +948,13 @@ static void *janus_echotest_handler(void *data) {
 			g_snprintf(error_cause, 512, "Invalid value (videocodec should be a string)");
 			goto error;
 		}
+		json_t *videoprofile = json_object_get(root, "videoprofile");
+		if(videoprofile && !json_is_string(videoprofile)) {
+			JANUS_LOG(LOG_ERR, "Invalid element (videoprofile should be a string)\n");
+			error_code = JANUS_ECHOTEST_ERROR_INVALID_ELEMENT;
+			g_snprintf(error_cause, 512, "Invalid value (videoprofile should be a string)");
+			goto error;
+		}
 		/* Enforce request */
 		if(audio) {
 			session->audio_active = json_is_true(audio);
@@ -941,6 +973,12 @@ static void *janus_echotest_handler(void *data) {
 			session->bitrate = json_integer_value(bitrate);
 			JANUS_LOG(LOG_VERB, "Setting video bitrate: %"SCNu32"\n", session->bitrate);
 			gateway->send_remb(session->handle, session->bitrate ? session->bitrate : 10000000);
+		}
+		if(fallback) {
+			JANUS_LOG(LOG_VERB, "Setting fallback timer (simulcast): %lld (was %"SCNu32")\n",
+				json_integer_value(fallback) ? json_integer_value(fallback) : 250000,
+				session->sim_context.drop_trigger ? session->sim_context.drop_trigger : 250000);
+			session->sim_context.drop_trigger = json_integer_value(fallback);
 		}
 		if(substream) {
 			session->sim_context.substream_target = json_integer_value(substream);
@@ -987,10 +1025,10 @@ static void *janus_echotest_handler(void *data) {
 			session->has_data = (strstr(msg_sdp, "DTLS/SCTP") != NULL);
 		}
 
-		if(!audio && !video && !bitrate && !substream && !temporal && !record && !msg_sdp) {
-			JANUS_LOG(LOG_ERR, "No supported attributes (audio, video, bitrate, substream, temporal, record, jsep) found\n");
+		if(!audio && !video && !videocodec && !videoprofile && !bitrate && !substream && !temporal && !fallback && !record && !msg_sdp) {
+			JANUS_LOG(LOG_ERR, "No supported attributes (audio, video, videocodec, videoprofile, bitrate, substream, temporal, fallback, record, jsep) found\n");
 			error_code = JANUS_ECHOTEST_ERROR_INVALID_ELEMENT;
-			g_snprintf(error_cause, 512, "Message error: no supported attributes (audio, video, bitrate, simulcast, temporal, record, jsep) found");
+			g_snprintf(error_cause, 512, "Message error: no supported attributes (audio, video, videocodec, videoprofile, bitrate, simulcast, temporal, fallback, record, jsep) found");
 			goto error;
 		}
 
@@ -1040,6 +1078,8 @@ static void *janus_echotest_handler(void *data) {
 				JANUS_SDP_OA_AUDIO_CODEC, json_string_value(audiocodec),
 				JANUS_SDP_OA_AUDIO_FMTP, opus_fec ? "useinbandfec=1" : NULL,
 				JANUS_SDP_OA_VIDEO_CODEC, json_string_value(videocodec),
+				JANUS_SDP_OA_VP9_PROFILE, json_string_value(videoprofile),
+				JANUS_SDP_OA_H264_PROFILE, json_string_value(videoprofile),
 				JANUS_SDP_OA_ACCEPT_EXTMAP, JANUS_RTP_EXTMAP_MID,
 				JANUS_SDP_OA_ACCEPT_EXTMAP, JANUS_RTP_EXTMAP_RID,
 				JANUS_SDP_OA_ACCEPT_EXTMAP, JANUS_RTP_EXTMAP_REPAIRED_RID,
@@ -1072,6 +1112,13 @@ static void *janus_echotest_handler(void *data) {
 					g_free(session->rid[0]);
 					session->rid[0] = NULL;
 				}
+			}
+			g_free(session->vfmtp);
+			session->vfmtp = NULL;
+			if(session->has_video) {
+				const char *vfmtp = janus_sdp_get_fmtp(answer, janus_sdp_get_codec_pt(answer, vcodec));
+				if(vfmtp != NULL)
+					session->vfmtp = g_strdup(vfmtp);
 			}
 			/* Done */
 			char *sdp = janus_sdp_write(answer);
@@ -1127,7 +1174,8 @@ static void *janus_echotest_handler(void *data) {
 					if(recording_base) {
 						/* Use the filename and path we have been provided */
 						g_snprintf(filename, 255, "%s-video", recording_base);
-						session->vrc = janus_recorder_create(NULL, janus_videocodec_name(session->vcodec), filename);
+						session->vrc = janus_recorder_create_full(NULL,
+							janus_videocodec_name(session->vcodec), session->vfmtp, filename);
 						if(session->vrc == NULL) {
 							/* FIXME We should notify the fact the recorder could not be created */
 							JANUS_LOG(LOG_ERR, "Couldn't open an video recording file for this EchoTest user!\n");
@@ -1135,7 +1183,8 @@ static void *janus_echotest_handler(void *data) {
 					} else {
 						/* Build a filename */
 						g_snprintf(filename, 255, "echotest-%p-%"SCNi64"-video", session, now);
-						session->vrc = janus_recorder_create(NULL, janus_videocodec_name(session->vcodec), filename);
+						session->vrc = janus_recorder_create_full(NULL,
+							janus_videocodec_name(session->vcodec), session->vfmtp, filename);
 						if(session->vrc == NULL) {
 							/* FIXME We should notify the fact the recorder could not be created */
 							JANUS_LOG(LOG_ERR, "Couldn't open an video recording file for this EchoTest user!\n");

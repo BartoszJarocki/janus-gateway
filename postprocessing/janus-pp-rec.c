@@ -510,10 +510,14 @@ int main(int argc, char *argv[])
 					if(!strcasecmp(c, "opus")) {
 						opus = TRUE;
 						if(extension && strcasecmp(extension, "opus")) {
-							JANUS_LOG(LOG_ERR, "Opus RTP packets can only be converted to a .opus file\n");
+							JANUS_LOG(LOG_ERR, "Opus RTP packets can only be converted to an .opus file\n");
 							cmdline_parser_free(&args_info);
 							exit(1);
 						}
+					} else if(!strcasecmp(c, "multiopus")) {
+						JANUS_LOG(LOG_ERR, "Surround Opus RTP packets are not supported, at the moment\n");
+						cmdline_parser_free(&args_info);
+						exit(1);
 					} else if(!strcasecmp(c, "g711") || !strcasecmp(c, "pcmu") || !strcasecmp(c, "pcma")) {
 						g711 = TRUE;
 						if(extension && strcasecmp(extension, "wav")) {
@@ -529,7 +533,7 @@ int main(int argc, char *argv[])
 							exit(1);
 						}
 					} else {
-						JANUS_LOG(LOG_WARN, "The post-processor only supports Opus and G.711 audio for now (was '%s')...\n", c);
+						JANUS_LOG(LOG_WARN, "The post-processor only supports Opus, G.711 and G.722 audio for now (was '%s')...\n", c);
 						cmdline_parser_free(&args_info);
 						exit(1);
 					}
@@ -545,6 +549,8 @@ int main(int argc, char *argv[])
 						exit(1);
 					}
 				}
+				/* Any codec-specific info? (just informational) */
+				const char *f = json_string_value(json_object_get(info, "f"));
 				/* When was the file created? */
 				json_t *created = json_object_get(info, "s");
 				if(!created || !json_is_integer(created)) {
@@ -564,6 +570,8 @@ int main(int argc, char *argv[])
 				/* Summary */
 				JANUS_LOG(LOG_INFO, "This is %s recording:\n", video ? "a video" : (data ? "a text data" : "an audio"));
 				JANUS_LOG(LOG_INFO, "  -- Codec:   %s\n", c);
+				if(f != NULL)
+					JANUS_LOG(LOG_INFO, "  -- -- fmtp: %s\n", f);
 				JANUS_LOG(LOG_INFO, "  -- Created: %"SCNi64"\n", c_time);
 				JANUS_LOG(LOG_INFO, "  -- Written: %"SCNi64"\n", w_time);
 				/* Save the original string as a metadata to save in the media container, if possible */
@@ -690,9 +698,9 @@ int main(int argc, char *argv[])
 				ntohs(ext->type), ntohs(ext->length));
 			skip += 4 + ntohs(ext->length)*4;
 			if(audio_level_extmap_id > 0)
-				janus_pp_rtp_header_extension_parse_audio_level(prebuffer, len > 24 ? 24 : len, audio_level_extmap_id, &audiolevel);
+				janus_pp_rtp_header_extension_parse_audio_level(prebuffer, len, audio_level_extmap_id, &audiolevel);
 			if(video_orient_extmap_id > 0) {
-				janus_pp_rtp_header_extension_parse_video_orientation(prebuffer, len > 24 ? 24 : len, video_orient_extmap_id, &rotation);
+				janus_pp_rtp_header_extension_parse_video_orientation(prebuffer, len, video_orient_extmap_id, &rotation);
 				if(rotation != -1 && rotation != last_rotation) {
 					last_rotation = rotation;
 					rotated++;
